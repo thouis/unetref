@@ -1,8 +1,10 @@
-from keras.layers import Input, merge, Convolution3D, MaxPooling3D, UpSampling3D
+from keras.layers import Input, merge, Convolution3D, MaxPooling3D
+from keras.layers.normalization import BatchNormalization
+from keras.layers.advanced_activations import ELU
 from keras.models import Model
 from keras.optimizers import SGD, Adam
 from keras.callbacks import Callback
-from crop3d import Cropping3D
+from depth_to_space import DepthToSpace3D
 import keras.backend as K
 import numpy as np
 
@@ -37,33 +39,50 @@ def weighted_mse(y_true, y_pred):
     return K.mean(batch_weighted_mse)
 
 
-def unet(input, num_features, depth=3, mult=2):
-    # pre convolutions
-    # TODO: replace with resnet module
-    conv1 = Convolution3D(num_features, 3, 3, 3, activation='relu')(input)
-    conv2 = Convolution3D(num_features, 3, 3, 3, activation='relu')(conv1)
-    if depth == 0:
-        return conv2
+def residual_block(input, num_feature_maps, filter_size=3):
+    conv_1 = BatchNormalization(axis=1, mode=2)(input)
+    conv_1 = ELU()(conv_1)
+    conv_1 = Convolution3D(num_feature_maps, filter_size, filter_size, filter_size,
+                           border_mode='same', bias=False)(conv_1)
 
-    downsampled = MaxPooling3D(pool_size=(1, 2, 2))(conv2)
+    conv_2 = BatchNormalization(axis=1, mode=2)(conv_1)
+    conv_2 = ELU()(conv_2)
+    conv_2 = Convolution3D(num_feature_maps, filter_size, filter_size, filter_size,
+                           border_mode='same', bias=True)(conv_2)
+
+    return merge([input, conv_2], mode='sum')
+
+
+def unet(input, num_features, depth=3, feature_map_mul=3):
+    num_input_features = int(input.get_shape()[4])
+
+    # bring input up to internal number of features
+    increase_features = Convolution3D(num_features, 1, 1, 1)(input)
+
+    # preprocessing block
+    chain1 = residual_block(increase_features, num_features)
+    if depth == 0:
+        return chain1
+
     # recurse to next terrace
-    nested = unet(downsampled, mult * num_features, depth=(depth - 1), mult=mult)
-    upsampled = UpSampling3D(size=(1, 2, 2))(nested)
-    upconved = Convolution3D(num_features, 1, 1, 1)(upsampled)
+    downsampled = MaxPooling3D(pool_size=(1, 2, 2))(chain1)
+    nested = unet(downsampled, feature_map_mul * num_features,
+                  depth=(depth - 1), feature_map_mul=feature_map_mul)
+    # bring up to 4x features
+    post_nested = Convolution3D(4 * num_features, 1, 1, 1)(nested)
+    upsampled = DepthToSpace3D()(post_nested)
+
+    # merge preprocessing block and nested block
+    merged = merge([chain1, upsampled], mode='sum')
+
+    # postprocessing block
+    chain2 = residual_block(merged, num_features)
+
+    # take back down to input size
+    decrease_features = Convolution3D(num_input_features, 1, 1, 1)(chain2)
 
     # merge
-    # TODO - remove cropping
-    size_diff = ((s1 - s2) for s1, s2 in zip(conv2.get_shape()[1:],
-                                             upconved.get_shape()[1:]))
-    crops = [(int(d) // 2, int(d) // 2) for d in size_diff][:3]
-    cropped = Cropping3D(crops)(conv2)
-    merged = merge([cropped, upconved], mode='concat', concat_axis=4)
-
-    # post convolutions
-    # TODO: replace with resnet module
-    conv3 = Convolution3D(num_features, 3, 3, 3, activation='relu')(merged)
-    conv4 = Convolution3D(num_features, 3, 3, 3, activation='relu')(conv3)
-    return conv4
+    return merge([input, decrease_features], mode='sum')
 
 
 class CB(Callback):
@@ -82,10 +101,12 @@ class CB(Callback):
         f.close()
 
 if __name__ == '__main__':
-    INPUT_SHAPE = (35, 412, 412, 1)
-    OUTPUT_SHAPE = (7, 324, 324, 1)
+    INPUT_SHAPE = (17, 512, 512, 1)
+    OUTPUT_SHAPE = (17, 512, 512, 1)
 
-    x = Input(shape=INPUT_SHAPE)    middle = unet(x, 10, depth=3, mult=3)
+    x = Input(shape=INPUT_SHAPE)
+    first = Convolution3D(10, 3, 3, 3, border_mode='same', bias=True)(x)
+    middle = unet(first, 10, depth=3, feature_map_mul=3)
     out = Convolution3D(1, 1, 1, 1, activation='sigmoid')(middle)
     assert all(o1 == o2 for o1, o2 in zip(OUTPUT_SHAPE, out.get_shape()[1:]))
 
@@ -96,13 +117,15 @@ if __name__ == '__main__':
     batchgen = datagen.generate_data('training_data.h5',
                                      INPUT_SHAPE[:-1],
                                      OUTPUT_SHAPE[:-1],
-                                     2)
+                                     1)
 
     i, o = next(batchgen)
-    while o.mean() < 0.03:
+    while o.mean() < 0.01:
         i, o = next(batchgen)
 
-    #model.compile(loss=weighted_mse, optimizer=SGD(lr=1e-3, momentum=0.95, clipvalue=0.5))
+    print("compiling")
+    # model.compile(loss=weighted_mse, optimizer=SGD(lr=1e-3, momentum=0.95, clipvalue=0.5))
     model.compile(loss=weighted_mse, optimizer=Adam(lr=1e-4))
     # model.load_weights('start.h5')
+    print("fitting")
     model.fit_generator(batchgen, 50, 4000, verbose=2, callbacks=[CB(model, i, o)])
