@@ -2,10 +2,11 @@ import h5py
 import numpy as np
 
 
-def generate_data(path, input_shape, output_shape, batch_size):
+def generate_data(path, input_shape, output_shape, batch_size, ignore_distance=35.0):
     f = h5py.File(path, 'r')
     raw_data = f['raw']
     gt_data = f['gt']
+    dists = f['distances']
 
     raw_to_gt_offsets = [(i - o) // 2 for i, o in zip(input_shape, output_shape)]
 
@@ -21,6 +22,8 @@ def generate_data(path, input_shape, output_shape, batch_size):
                 slices = [slice(l + o, l + o + i)
                           for l, i, o in zip(lo_corner, output_shape, raw_to_gt_offsets)]
                 subgt = (gt_data[tuple(slices)] > 0).astype(np.float32)
+                subdist = dists[tuple(slices)].astype(np.float32)
+                subgt[(subdist <= ignore_distance) & (subgt == 0)] = 0.5
 
                 # make sure we have enough positive pixels
                 if subgt.mean() > 0.015:

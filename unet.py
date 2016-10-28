@@ -20,17 +20,24 @@ def maybe_print(tensor, msg, do_print=False):
 
 
 def weighted_mse(y_true, y_pred):
-    # per batch positive fraction
-    pos_fracs = K.clip((K.sum(y_true, axis=[1, 2, 3, 4], keepdims=True) /
-                        K.cast(K.prod(K.shape(y_true)[1:]), np.float32)),
+    # per batch positive fraction, negative fraction (0.5 = ignore)
+    pos_mask = K.cast(y_true > 0.75, np.float32)
+    neg_mask = K.cast(y_true < 0.25, np.float32)
+    num_pixels = K.cast(K.prod(K.shape(y_true)[1:]), np.float32)
+    pos_fracs = K.clip((K.sum(pos_mask, axis=[1, 2, 3, 4], keepdims=True) /
+                        num_pixels),
                        0.01, 0.99)
+    neg_fracs = K.clip((K.sum(neg_mask, axis=[1, 2, 3, 4], keepdims=True) /
+                        num_pixels),
+                       0.01, 0.99)
+
     pos_fracs = maybe_print(pos_fracs, "positive fraction")
 
-    # chosen to sum to 1 when multiplied by their fractions
+    # chosen to sum to 1 when multiplied by their fractions, assuming no ignore
     pos_weight = maybe_print(1.0 / (2 * pos_fracs), "positive weight")
-    neg_weight = maybe_print(1.0 / (2 * (1.0 - pos_fracs)), "negative weight")
+    neg_weight = maybe_print(1.0 / (2 * neg_fracs), "negative weight")
 
-    per_pixel_weights = (pos_weight - neg_weight) * y_true + neg_weight
+    per_pixel_weights = pos_weight * pos_mask + neg_weight * neg_mask
     per_pixel_weighted_sq_error = K.square(y_true - y_pred) * per_pixel_weights
 
     batch_weighted_mse = K.mean(per_pixel_weighted_sq_error,
