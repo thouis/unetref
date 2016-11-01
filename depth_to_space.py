@@ -56,6 +56,7 @@ class DepthToSpace3D(Layer):
                 for j in range(block_size):
                     out = K.T.set_subtensor(out[:, :, :, i::block_size, j::block_size],
                                             x[:, (block_size * i + j)::(block_size ** 2), :, :, :])
+            return out
 
     def get_config(self):
         config = {'block_size': self.block_size}

@@ -21,9 +21,9 @@ def maybe_print(tensor, msg, do_print=False):
 
 def weighted_mse(y_true, y_pred):
     # per batch positive fraction, negative fraction (0.5 = ignore)
-    pos_mask = K.cast(y_true > 0.75, np.float32)
-    neg_mask = K.cast(y_true < 0.25, np.float32)
-    num_pixels = K.cast(K.prod(K.shape(y_true)[1:]), np.float32)
+    pos_mask = K.cast(y_true > 0.75, 'float32')
+    neg_mask = K.cast(y_true < 0.25, 'float32')
+    num_pixels = K.cast(K.prod(K.shape(y_true)[1:]), 'float32')
     pos_fracs = K.clip((K.sum(pos_mask, axis=[1, 2, 3, 4], keepdims=True) /
                         num_pixels),
                        0.01, 0.99)
@@ -60,9 +60,8 @@ def residual_block(input, num_feature_maps, filter_size=3):
     return merge([input, conv_2], mode='sum')
 
 
-def unet(input, num_features, depth=3, feature_map_mul=3):
-    num_input_features = int(input.get_shape()[4])
-
+def unet(input, num_features, num_input_features,
+         depth=3, feature_map_mul=3):
     # bring input up to internal number of features
     increase_features = Convolution3D(num_features, 1, 1, 1)(input)
 
@@ -73,7 +72,7 @@ def unet(input, num_features, depth=3, feature_map_mul=3):
 
     # recurse to next terrace
     downsampled = MaxPooling3D(pool_size=(1, 2, 2))(chain1)
-    nested = unet(downsampled, feature_map_mul * num_features,
+    nested = unet(downsampled, feature_map_mul * num_features, num_features,
                   depth=(depth - 1), feature_map_mul=feature_map_mul)
     # bring up to 4x features
     post_nested = Convolution3D(4 * num_features, 1, 1, 1)(nested)
@@ -108,23 +107,29 @@ class CB(Callback):
         f.close()
 
 if __name__ == '__main__':
-    INPUT_SHAPE = (17, 512, 512, 1)
-    OUTPUT_SHAPE = (17, 512, 512, 1)
+    if K._BACKEND == 'tensorflow':
+        INPUT_SHAPE = (17, 512, 512, 1)
+        OUTPUT_SHAPE = (17, 512, 512, 1)
+    else:
+        INPUT_SHAPE = (1, 11, 512, 512)
+        OUTPUT_SHAPE = (1, 11, 512, 512)
 
     x = Input(shape=INPUT_SHAPE)
     first = Convolution3D(10, 3, 3, 3, border_mode='same', bias=True)(x)
-    middle = unet(first, 10, depth=3, feature_map_mul=3)
+    middle = unet(first, 10, 10, depth=3, feature_map_mul=3)
     out = Convolution3D(1, 1, 1, 1, activation='sigmoid')(middle)
-    assert all(o1 == o2 for o1, o2 in zip(OUTPUT_SHAPE, out.get_shape()[1:]))
-
     model = Model(input=x, output=out)
+
+    assert all(o1 == o2 for o1, o2 in zip(OUTPUT_SHAPE, model.layers[-1].output_shape[1:]))
+
     from keras.utils.visualize_util import plot
     plot(model, to_file='model.png', show_shapes=True)
 
     batchgen = datagen.generate_data('training_data.h5',
-                                     INPUT_SHAPE[:-1],
-                                     OUTPUT_SHAPE[:-1],
-                                     1)
+                                     INPUT_SHAPE,
+                                     OUTPUT_SHAPE,
+                                     1,
+                                     channel_idx=(3 if K._BACKEND == 'tensorflow' else 0))
 
     i, o = next(batchgen)
     while o.mean() < 0.01:
