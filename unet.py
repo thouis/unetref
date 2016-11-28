@@ -1,4 +1,4 @@
-from keras.layers import Input, merge, Convolution3D, MaxPooling3D
+from keras.layers import Input, merge, Convolution3D, MaxPooling3D, Dropout
 from keras.layers.normalization import BatchNormalization
 from keras.layers.advanced_activations import ELU
 from keras.models import Model
@@ -44,6 +44,14 @@ def weighted_mse(y_true, y_pred):
                                 axis=[1, 2, 3, 4])
 
     return K.mean(batch_weighted_mse)
+
+
+def lle_loss(y_true, y_pred):
+    return K.mean(K.binary_crossentropy(y_true, y_pred))
+
+def L1_loss(y_true, y_pred):
+    return K.mean(K.abs(y_true - y_pred))
+
 
 
 def residual_block(input, num_feature_maps, filter_size=3):
@@ -108,15 +116,16 @@ class CB(Callback):
 
 if __name__ == '__main__':
     if K._BACKEND == 'tensorflow':
-        INPUT_SHAPE = (17, 512, 512, 1)
-        OUTPUT_SHAPE = (17, 512, 512, 1)
+        INPUT_SHAPE = (17, 256, 256, 1)
+        OUTPUT_SHAPE = (17, 256, 256, 1)
     else:
-        INPUT_SHAPE = (1, 11, 512, 512)
-        OUTPUT_SHAPE = (1, 11, 512, 512)
+        INPUT_SHAPE = (1, 11, 256, 256)
+        OUTPUT_SHAPE = (1, 11, 256, 256)
 
     x = Input(shape=INPUT_SHAPE)
     first = Convolution3D(10, 3, 3, 3, border_mode='same', bias=True)(x)
-    middle = unet(first, 10, 10, depth=3, feature_map_mul=3)
+    drop = Dropout(0.8)(first)
+    middle = unet(drop, 10, 10, depth=3, feature_map_mul=3)
     out = Convolution3D(1, 1, 1, 1, activation='sigmoid')(middle)
     model = Model(input=x, output=out)
 
@@ -128,12 +137,10 @@ if __name__ == '__main__':
     batchgen = datagen.generate_data('training_data.h5',
                                      INPUT_SHAPE,
                                      OUTPUT_SHAPE,
-                                     1,
+                                     4,
                                      channel_idx=(3 if K._BACKEND == 'tensorflow' else 0))
 
     i, o = next(batchgen)
-    while o.mean() < 0.01:
-        i, o = next(batchgen)
 
     print("compiling")
     # model.compile(loss=weighted_mse, optimizer=SGD(lr=1e-3, momentum=0.95, clipvalue=0.5))

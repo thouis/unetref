@@ -49,14 +49,9 @@ class DepthToSpace3D(Layer):
         else:
             block_size = self.block_size
             b, k, d, r, c = x.shape
-            # x.shape is a theano expression
-            out = K.reshape(K.zeros_like(x),
-                            (b, k // (block_size ** 2), d, r * block_size, c * block_size))
-            for i in range(block_size):
-                for j in range(block_size):
-                    out = K.T.set_subtensor(out[:, :, :, i::block_size, j::block_size],
-                                            x[:, (block_size * i + j)::(block_size ** 2), :, :, :])
-            return out
+            r1 = x.reshape((b, k // (block_size ** 2), block_size, block_size, d, r, c))
+            r2 = r1.transpose(0, 1, 4, 5, 2, 6, 3)
+            return r2.reshape((b, k // (block_size ** 2), d, r * block_size, c * block_size))
 
     def get_config(self):
         config = {'block_size': self.block_size}

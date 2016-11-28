@@ -4,19 +4,24 @@ import h5py
 import imread
 from glob import glob
 import numpy as np
-from scipy.ndimage.morphology import distance_transform_edt
+import scipy.ndimage as ndi
 
-raw_files = sorted(glob(os.path.join(sys.argv[1], '*.png')))
-raw = np.stack([imread.imread(im) for im in raw_files], axis=0)
+raw_files = sorted(glob('data/grayscale_maps/*.png'))
+# ignore first file because it's not labeled, and move to grayscale
+raw = np.stack([imread.imread(im) for im in raw_files], axis=0)[1:, ..., 0]
+print(raw.shape)
 
-gt_files = sorted(glob(os.path.join(sys.argv[2], '*.png')))
-gt = np.stack([imread.imread(im) for im in gt_files], axis=0)
+gt = h5py.File('data/seg_groundtruth.h5', 'r')['main'][1:, ...]
+print(gt.shape)
 
-f = h5py.File('training_data.h5')
+membranes = gt.copy()
+for idx in range(membranes.shape[0]):
+    mem2d = membranes[idx, ...]
+    borders = ndi.minimum_filter(mem2d, 3) != ndi.maximum_filter(mem2d, 3)
+    borders = borders | (mem2d == 0)
+    membranes[idx, ...] = borders
+
+f = h5py.File('training_data.h5', 'w')
 f.create_dataset('raw', data=raw)
 f.create_dataset('gt', data=gt)
-
-# create distance field (from background, with synapses as background)
-# sampling is 30 nm in Z, 4 in X,Y
-distance = distance_transform_edt(gt == 0, (30, 4, 4))
-f.create_dataset('distance', data=distance)
+f.create_dataset('membranes', data=membranes.astype(np.uint8))
