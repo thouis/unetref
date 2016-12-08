@@ -10,6 +10,7 @@ import numpy as np
 
 import datagen
 import h5py
+from Eve import Eve
 
 
 def maybe_print(tensor, msg, do_print=False):
@@ -55,12 +56,12 @@ def L1_loss(y_true, y_pred):
 
 
 def residual_block(input, num_feature_maps, filter_size=3):
-    conv_1 = BatchNormalization(axis=1, mode=2)(input)
+    conv_1 = BatchNormalization(axis=2, mode=2)(input)
     conv_1 = ELU()(conv_1)
     conv_1 = Convolution3D(num_feature_maps, filter_size, filter_size, filter_size,
                            border_mode='same', bias=False)(conv_1)
 
-    conv_2 = BatchNormalization(axis=1, mode=2)(conv_1)
+    conv_2 = BatchNormalization(axis=2, mode=2)(conv_1)
     conv_2 = ELU()(conv_2)
     conv_2 = Convolution3D(num_feature_maps, filter_size, filter_size, filter_size,
                            border_mode='same', bias=True)(conv_2)
@@ -113,6 +114,14 @@ class CB(Callback):
         f.create_dataset('i', data=self.i)
         f.create_dataset('o', data=self.o)
         f.close()
+        if epoch % 100 == 0:
+            self.m.save_weights('weights_ep{}.h5'.format(epoch))
+
+
+def alternate(seqs):
+    while True:
+        for s in seqs:
+            yield next(s)
 
 if __name__ == '__main__':
     if K._BACKEND == 'tensorflow':
@@ -134,17 +143,23 @@ if __name__ == '__main__':
     from keras.utils.visualize_util import plot
     plot(model, to_file='model.png', show_shapes=True)
 
-    batchgen = datagen.generate_data('training_data.h5',
-                                     INPUT_SHAPE,
-                                     OUTPUT_SHAPE,
-                                     4,
-                                     channel_idx=(3 if K._BACKEND == 'tensorflow' else 0))
+    gens = [datagen.generate_data(g,
+                                  INPUT_SHAPE,
+                                  OUTPUT_SHAPE,
+                                  4,
+                                  channel_idx=(3 if K._BACKEND == 'tensorflow' else 0))
+            for g in ['ecs_training_data.h5', 'ac4_training_data.h5',
+                      'ecs_training_data.h5', 'ac4_training_data_half.h5']]
 
-    i, o = next(batchgen)
+    i, o = next(gens[0])
+
+    batchgen = alternate(gens)
 
     print("compiling")
     # model.compile(loss=weighted_mse, optimizer=SGD(lr=1e-3, momentum=0.95, clipvalue=0.5))
-    model.compile(loss=weighted_mse, optimizer=Adam(lr=1e-4))
-    # model.load_weights('start.h5')
+    opt = Eve(lr=1E-4, decay=1E-4, beta_1=0.9, beta_2=0.999, beta_3=0.999, small_k=0.1, big_K=10, epsilon=1e-08)
+    model.compile(loss=weighted_mse, optimizer=opt)
+    # model.compile(loss=weighted_mse, optimizer=Adam(lr=1e-4))
+    model.load_weights('start.h5')
     print("fitting")
-    model.fit_generator(batchgen, 50, 4000, verbose=2, callbacks=[CB(model, i, o)])
+    model.fit_generator(batchgen, 512, 4000, verbose=1, callbacks=[CB(model, i, o)])
