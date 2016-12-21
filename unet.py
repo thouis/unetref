@@ -8,8 +8,9 @@ from depth_to_space import DepthToSpace3D
 import keras.backend as K
 import numpy as np
 
+import os.path
+
 import datagen
-import datagen_synapse
 import h5py
 from Eve import Eve
 
@@ -115,57 +116,47 @@ class CB(Callback):
         f.create_dataset('i', data=self.i)
         f.create_dataset('o', data=self.o)
         f.close()
-        if epoch % 100 == 0:
+        if epoch % 50 == 0:
             self.m.save_weights('weights_ep{}.h5'.format(epoch))
 
 
-def alternate_and_extend(seqs, chan_idx, mask_dist=25):
+def mask(d, chan_idx, mask_dist=25):
+    # mask border to avoid training near edges
+    if chan_idx == 1:
+        # B, C, D, W, H
+        d[:, :, :, :mask_dist, :] = 0.5
+        d[:, :, :, -mask_dist:, :] = 0.5
+        d[:, :, :, :, :mask_dist] = 0.5
+        d[:, :, :, :, -mask_dist:] = 0.5
+    else:
+        assert chan_idx == 3
+        # B, D, W, H, C
+        d[:, :, :mask_dist, :, :] = 0.5
+        d[:, :, -mask_dist:, :, :] = 0.5
+        d[:, :, :, :mask_dist, :] = 0.5
+        d[:, :, :, -mask_dist:, :] = 0.5
+    return d
+
+
+def alternate(seqs):
     while True:
         for s in seqs:
-            r, d = next(s)
+            yield next(s)
 
-            # mask border to avoid training near edges
-            if chan_idx == 1:
-                # B, C, D, W, H
-                d[:, :, :, :mask_dist, :] = 0.5
-                d[:, :, :, -mask_dist:, :] = 0.5
-                d[:, :, :, :, :mask_dist] = 0.5
-                d[:, :, :, :, -mask_dist:] = 0.5
-            else:
-                assert chan_idx == 3
-                # B, D, W, H, C
-                d[:, :, :mask_dist, :, :] = 0.5
-                d[:, :, -mask_dist:, :, :] = 0.5
-                d[:, :, :, :mask_dist, :] = 0.5
-                d[:, :, :, -mask_dist:, :] = 0.5
-
-            # make 3 channel: membrane, syn1, syn2
-            if d.shape[chan_idx] == 1:
-                # is membrane, extend with two planes of 0.5 (the ignore value)
-                ignore = 0.5 * np.ones_like(d)
-                yield r, np.concatenate([d, ignore, ignore], axis=chan_idx)
-            elif d.shape[chan_idx] == 2:
-                # is synapse, extend with one plane of 0.5 in first plane
-                ign_shape = list(d.shape)
-                ign_shape[chan_idx] = 1
-                ignore = 0.5 * np.ones(ign_shape, dtype=d.dtype)
-                yield r, np.concatenate([ignore, d], axis=chan_idx)
-            else:
-                raise ValueError("Unknown data size")
 
 if __name__ == '__main__':
     if K._BACKEND == 'tensorflow':
         INPUT_SHAPE = (17, 256, 256, 1)
-        OUTPUT_SHAPE = (17, 256, 256, 3)
+        OUTPUT_SHAPE = (17, 256, 256, 1)
     else:
         INPUT_SHAPE = (1, 11, 256, 256)
-        OUTPUT_SHAPE = (3, 11, 256, 256)
+        OUTPUT_SHAPE = (1, 11, 256, 256)
 
     x = Input(shape=INPUT_SHAPE)
     first = Convolution3D(10, 3, 3, 3, border_mode='same', bias=True)(x)
     drop = Dropout(0.8)(first)
     middle = unet(drop, 10, 10, depth=3, feature_map_mul=3)
-    out = Convolution3D(3, 1, 1, 1, activation='sigmoid')(middle)
+    out = Convolution3D(1, 1, 1, 1, activation='sigmoid')(middle)
     model = Model(input=x, output=out)
 
     assert all(o1 == o2 for o1, o2 in zip(OUTPUT_SHAPE, model.layers[-1].output_shape[1:]))
@@ -173,32 +164,38 @@ if __name__ == '__main__':
     from keras.utils.visualize_util import plot
     plot(model, to_file='model.png', show_shapes=True)
 
-    mem_files = ['ecs_training_data.h5', 'ac4_training_data.h5', 'ac4_training_data_half.h5']
     channel_idx = (3 if K._BACKEND == 'tensorflow' else 0)
-    ecs_gen, ac4_gen, ac4_gen_half = [datagen.generate_data(f,
-                                                            INPUT_SHAPE,
-                                                            OUTPUT_SHAPE,
-                                                            4,
-                                                            channel_idx=channel_idx)
-                                      for f in mem_files]
-    syn_gen = datagen_synapse.generate_data('ecs_synapse_gt.h5',
-                                            INPUT_SHAPE,
-                                            OUTPUT_SHAPE,
-                                            4,
-                                            channel_idx=channel_idx)
-    # emphasize ECS
-    gens = [ecs_gen, syn_gen, ac4_gen, ecs_gen, syn_gen, ac4_gen_half]
 
-    batchgen = alternate_and_extend(gens, channel_idx + 1)  # +1 for batch
+    data_files = ['ecs1_membrane_data.h5', 'ecs2_membrane_data.h5',
+                  'ac4_training_data.h5', 'ac4_training_data_half.h5',
+                  'sample_A_20160501.hdf', 'sample_B_20160501.hdf', 'sample_C_20160501.hdf']
+
+    datagens = [datagen.generate_data(os.path.join('training_data', f),
+                                      INPUT_SHAPE,
+                                      OUTPUT_SHAPE,
+                                      4,
+                                      channel_idx=channel_idx)
+                for f in data_files]
+
+    # emphasize ECS
+    ecs_gens = datagens[:2]
+    other_gens = datagens[2:]
+    # +1 to chan idx for batch
+    batchgen = ((raw, mask(gt, channel_idx + 1))
+                for raw, gt in alternate([alternate(ecs_gens),
+                                          alternate(other_gens)]))
 
     i, o = next(batchgen)
     print(o.shape)
+    print(i.shape)
+    assert(i.shape[1:] == INPUT_SHAPE)
+    assert(o.shape[1:] == OUTPUT_SHAPE)
 
     print("compiling")
     # model.compile(loss=weighted_mse, optimizer=SGD(lr=1e-3, momentum=0.95, clipvalue=0.5))
     opt = Eve(lr=1E-4, decay=1E-4, beta_1=0.9, beta_2=0.999, beta_3=0.999, small_k=0.1, big_K=10, epsilon=1e-08)
     model.compile(loss=weighted_mse, optimizer=opt)
     # model.compile(loss=weighted_mse, optimizer=Adam(lr=1e-4))
-    model.load_weights('start.h5')
+    # model.load_weights('start.h5')
     print("fitting")
     model.fit_generator(batchgen, 512, 4000, verbose=1, callbacks=[CB(model, i, o)])
