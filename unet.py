@@ -120,6 +120,7 @@ class CB(Callback):
             self.m.save_weights('weights_ep{}.h5'.format(epoch))
 
 
+# This ignore border should probably be smaller, as low as 10 or 5
 def mask(d, chan_idx, mask_dist=25):
     # mask border to avoid training near edges
     if chan_idx == 1:

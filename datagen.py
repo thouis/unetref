@@ -54,6 +54,8 @@ def generate_data(path, input_shape, output_shape, batch_size, ignore_distance=3
 
         subraws, subgts = zip(*batch)
         subraws, subgts = np.stack(subraws, axis=0), np.stack(subgts, axis=0)
+
+        # cut out just the membrane channel for current membrane-only training
         if channel_idx == 0:
             yield subraws, subgts[:, :1, ...]
         else:
